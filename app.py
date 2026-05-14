@@ -2,11 +2,73 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, LEFT, RIGHT, X, Button, Frame, Label, StringVar, Tk, filedialog, messagebox
+from tkinter import BOTH, LEFT, RIGHT, X, Button, Canvas, Frame, Label, Scrollbar, StringVar, Tk, filedialog, messagebox
+import webbrowser
 
 from PIL import Image, ImageTk
 
+import dataset_downloader
 import historical_document_ai as hdoc
+
+
+class ZoomableImageView(Frame):
+    def __init__(self, parent, background: str = "#eeeeee") -> None:
+        super().__init__(parent)
+        self.image = None
+        self.photo = None
+        self.zoom = 1.0
+        self.canvas = Canvas(self, bg=background, highlightthickness=0)
+        self.x_scroll = Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.y_scroll = Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(xscrollcommand=self.x_scroll.set, yscrollcommand=self.y_scroll.set)
+
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.y_scroll.grid(row=0, column=1, sticky="ns")
+        self.x_scroll.grid(row=1, column=0, sticky="ew")
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        self.canvas.bind("<Button-4>", self._on_mouse_wheel)
+        self.canvas.bind("<Button-5>", self._on_mouse_wheel)
+        self.canvas.bind("<Double-Button-1>", self.reset_zoom)
+
+    def set_image(self, image) -> None:
+        self.image = image.copy()
+        self.zoom = 1.0
+        self._render()
+
+    def clear(self) -> None:
+        self.image = None
+        self.photo = None
+        self.canvas.delete("all")
+        self.canvas.configure(scrollregion=(0, 0, 0, 0))
+
+    def reset_zoom(self, _event=None) -> None:
+        if self.image is not None:
+            self.zoom = 1.0
+            self._render()
+
+    def _on_mouse_wheel(self, event) -> None:
+        if self.image is None:
+            return
+        if getattr(event, "num", None) == 5 or event.delta < 0:
+            factor = 0.9
+        else:
+            factor = 1.1
+        self.zoom = min(5.0, max(0.2, self.zoom * factor))
+        self._render()
+
+    def _render(self) -> None:
+        rgb = hdoc.bgr_to_rgb(self.image)
+        pil_image = Image.fromarray(rgb)
+        w, h = pil_image.size
+        display_size = (max(1, int(w * self.zoom)), max(1, int(h * self.zoom)))
+        resized = pil_image.resize(display_size, Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(resized)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        self.canvas.configure(scrollregion=(0, 0, display_size[0], display_size[1]))
 
 
 class HistoricalDocumentApp:
@@ -19,8 +81,6 @@ class HistoricalDocumentApp:
         self.base_path: Path | None = None
         self.base_image = None
         self.current_result: hdoc.TechniqueResult | None = None
-        self.base_photo = None
-        self.result_photo = None
 
         self.status = StringVar(value="Carga una imagen historica para iniciar.")
         self.metrics = StringVar(value="El archivo base nunca se modifica.")
@@ -38,6 +98,8 @@ class HistoricalDocumentApp:
         Button(toolbar, text="Patrones", command=self.run_patterns, width=14).pack(side=LEFT, padx=4)
         Button(toolbar, text="Superresolucion", command=self.run_super_resolution, width=16).pack(side=LEFT, padx=4)
         Button(toolbar, text="Flujo completo", command=self.run_full_pipeline, width=14).pack(side=LEFT, padx=4)
+        Button(toolbar, text="Descargar muestras", command=self.download_samples, width=18).pack(side=LEFT, padx=4)
+        Button(toolbar, text="Enlaces datasets", command=self.open_dataset_links, width=16).pack(side=LEFT, padx=4)
         Button(toolbar, text="Guardar resultado", command=self.save_result, width=16).pack(side=RIGHT, padx=4)
 
         content = Frame(self.root, padx=12, pady=8)
@@ -49,12 +111,12 @@ class HistoricalDocumentApp:
         right_panel.pack(side=RIGHT, fill=BOTH, expand=True, padx=(8, 0))
 
         Label(left_panel, text="Documento base", font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        self.base_label = Label(left_panel, bg="#eeeeee", relief="groove")
-        self.base_label.pack(fill=BOTH, expand=True)
+        self.base_view = ZoomableImageView(left_panel)
+        self.base_view.pack(fill=BOTH, expand=True)
 
         Label(right_panel, text="Resultado de la tecnica", font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        self.result_label = Label(right_panel, bg="#eeeeee", relief="groove")
-        self.result_label.pack(fill=BOTH, expand=True)
+        self.result_view = ZoomableImageView(right_panel)
+        self.result_view.pack(fill=BOTH, expand=True)
 
         footer = Frame(self.root, padx=12, pady=8)
         footer.pack(fill=X)
@@ -76,9 +138,9 @@ class HistoricalDocumentApp:
             self.base_image = hdoc.load_image(self.base_path)
             self.current_result = None
             self._show_base()
-            self.result_label.configure(image="", text="")
+            self.result_view.clear()
             self.status.set(f"Imagen cargada: {self.base_path.name}")
-            self.metrics.set("Listo. El procesamiento se hara sobre copias en memoria.")
+            self.metrics.set("Listo. Usa la rueda del mouse para zoom y doble clic para reiniciar.")
         except Exception as exc:
             messagebox.showerror("Error al cargar", str(exc))
 
@@ -122,6 +184,36 @@ class HistoricalDocumentApp:
         except Exception as exc:
             messagebox.showerror("Error al guardar", str(exc))
 
+    def download_samples(self) -> None:
+        try:
+            output_dir = Path("datasets") / "e_codices_samples"
+            self.status.set("Descargando muestras publicas de e-codices...")
+            self.root.update_idletasks()
+            files = dataset_downloader.download_ecodices_samples(output_dir, limit=5)
+            if not files:
+                messagebox.showwarning("Sin descargas", "No se encontraron imagenes en los manifiestos.")
+                return
+            self.status.set(f"Se descargaron {len(files)} imagenes en {output_dir}")
+            self.metrics.set(
+                "Puedes cargarlas con 'Cargar imagen' o procesarlas en lote con "
+                f"tools\\batch_test_dataset.py {output_dir} outputs\\e_codices"
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Error al descargar",
+                "No se pudieron descargar las muestras. Revisa tu conexion o usa los enlaces manuales.\n\n"
+                f"Detalle: {exc}",
+            )
+
+    def open_dataset_links(self) -> None:
+        for url in [
+            "https://tc11.cvc.uab.es/datasets/",
+            "https://www.unifr.ch/inf/diva/en/research/software-data/diva-hisdb.html",
+            "https://ruiyangju.github.io/DKDS/",
+            "https://zenodo.org/records/2567398",
+        ]:
+            webbrowser.open_new_tab(url)
+
     def _run_technique(self, technique) -> None:
         if self.base_image is None:
             messagebox.showinfo("Falta imagen", "Carga primero una imagen base.")
@@ -137,18 +229,10 @@ class HistoricalDocumentApp:
             messagebox.showerror("Error de procesamiento", str(exc))
 
     def _show_base(self) -> None:
-        preview = hdoc.resize_for_display(self.base_image)
-        self.base_photo = self._to_photo(preview)
-        self.base_label.configure(image=self.base_photo, text="")
+        self.base_view.set_image(self.base_image)
 
     def _show_result(self, result: hdoc.TechniqueResult) -> None:
-        preview = hdoc.resize_for_display(result.image)
-        self.result_photo = self._to_photo(preview)
-        self.result_label.configure(image=self.result_photo, text="")
-
-    @staticmethod
-    def _to_photo(image) -> ImageTk.PhotoImage:
-        return ImageTk.PhotoImage(Image.fromarray(hdoc.bgr_to_rgb(image)))
+        self.result_view.set_image(result.image)
 
 
 def main() -> None:

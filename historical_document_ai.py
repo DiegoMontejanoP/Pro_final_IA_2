@@ -281,21 +281,24 @@ def residual_super_resolution(image: Array, scale: int = 2) -> TechniqueResult:
 
 
 def full_pipeline(image: Array) -> TechniqueResult:
-    restored = reconstruction(image).image
-    segmented = segmentation(restored).image
-    clustered = clustering(restored).image
-    pattern = pattern_recognition(restored).image
-    sr = residual_super_resolution(restored).image
-
-    target_h = max(restored.shape[0], segmented.shape[0], clustered.shape[0], pattern.shape[0])
-    thumbnails = [
-        _fit_to_height(restored, target_h),
-        _fit_to_height(segmented, target_h),
-        _fit_to_height(clustered, target_h),
-        _fit_to_height(pattern, target_h),
-        _fit_to_height(cv2.resize(sr, (restored.shape[1], restored.shape[0])), target_h),
+    stages = [
+        ("Reconstruccion", reconstruction(image).image),
     ]
-    visual = cv2.hconcat(thumbnails)
+    restored = stages[0][1]
+    stages.extend(
+        [
+            ("Segmentacion", segmentation(restored).image),
+            ("Agrupamiento", clustering(restored).image),
+            ("Patrones", pattern_recognition(restored).image),
+            (
+                "Superresolucion",
+                cv2.resize(residual_super_resolution(restored).image, (restored.shape[1], restored.shape[0])),
+            ),
+        ]
+    )
+
+    panels = [_make_labeled_panel(stage_image, label) for label, stage_image in stages]
+    visual = _stack_panels(panels, columns=2, background=(244, 244, 244))
     return TechniqueResult(
         title="Flujo completo",
         image=visual,
@@ -348,3 +351,71 @@ def _fit_to_height(image: Array, target_h: int) -> Array:
         return image
     new_w = max(1, int(w * target_h / max(h, 1)))
     return cv2.resize(image, (new_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def _make_labeled_panel(image: Array, label: str, width: int = 520, label_h: int = 48) -> Array:
+    h, w = image.shape[:2]
+    scaled_h = max(1, int(h * width / max(w, 1)))
+    resized = cv2.resize(image, (width, scaled_h), interpolation=cv2.INTER_AREA)
+    panel = np.full((scaled_h + label_h, width, 3), 255, dtype=np.uint8)
+    panel[label_h:, :] = resized
+    cv2.rectangle(panel, (0, 0), (width - 1, label_h - 1), (38, 38, 38), -1)
+    cv2.putText(
+        panel,
+        label,
+        (16, 31),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.78,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.rectangle(panel, (0, 0), (width - 1, scaled_h + label_h - 1), (205, 205, 205), 1)
+    return panel
+
+
+def _stack_panels(panels: list[Array], columns: int, background: tuple[int, int, int]) -> Array:
+    gap = 18
+    rows = [panels[index : index + columns] for index in range(0, len(panels), columns)]
+    row_images = []
+    max_width = 0
+    for row in rows:
+        row_h = max(panel.shape[0] for panel in row)
+        padded = [_pad_to_size(panel, panel.shape[1], row_h, background) for panel in row]
+        while len(padded) < columns:
+            padded.append(np.full((row_h, panels[0].shape[1], 3), background, dtype=np.uint8))
+        row_image = _hconcat_with_gap(padded, gap, background)
+        row_images.append(row_image)
+        max_width = max(max_width, row_image.shape[1])
+
+    normalized_rows = [_pad_to_size(row, max_width, row.shape[0], background) for row in row_images]
+    return _vconcat_with_gap(normalized_rows, gap, background)
+
+
+def _pad_to_size(image: Array, width: int, height: int, background: tuple[int, int, int]) -> Array:
+    output = np.full((height, width, 3), background, dtype=np.uint8)
+    h, w = image.shape[:2]
+    output[:h, :w] = image
+    return output
+
+
+def _hconcat_with_gap(images: list[Array], gap: int, background: tuple[int, int, int]) -> Array:
+    h = max(image.shape[0] for image in images)
+    w = sum(image.shape[1] for image in images) + gap * (len(images) - 1)
+    output = np.full((h, w, 3), background, dtype=np.uint8)
+    x = 0
+    for image in images:
+        output[: image.shape[0], x : x + image.shape[1]] = image
+        x += image.shape[1] + gap
+    return output
+
+
+def _vconcat_with_gap(images: list[Array], gap: int, background: tuple[int, int, int]) -> Array:
+    h = sum(image.shape[0] for image in images) + gap * (len(images) - 1)
+    w = max(image.shape[1] for image in images)
+    output = np.full((h, w, 3), background, dtype=np.uint8)
+    y = 0
+    for image in images:
+        output[y : y + image.shape[0], : image.shape[1]] = image
+        y += image.shape[0] + gap
+    return output

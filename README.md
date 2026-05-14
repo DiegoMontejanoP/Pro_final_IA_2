@@ -81,6 +81,12 @@ El archivo original solo se lee; no se sobrescribe ni se modifica.
 Consulta [DATASETS.md](DATASETS.md) para descargar datasets historicos como
 DIBCO/H-DIBCO, DIVA-HisDB, DKDS, ICDAR cBAD y DIDA.
 
+La interfaz tambien incluye dos botones:
+
+- **Descargar muestras:** descarga 5 imagenes publicas de manuscritos desde
+  e-codices usando IIIF.
+- **Enlaces datasets:** abre fuentes recomendadas para descarga manual.
+
 Tambien puedes ejecutar pruebas en lote con:
 
 ```bash
